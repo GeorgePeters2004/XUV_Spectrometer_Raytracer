@@ -53,14 +53,14 @@ class SphericalElement(OpticalElement):
 
         if self._curvature == 0:
             normal = [0,0,np.sign(-1 * ray.direc()[2])]
-            return normal
+            return np.array(normal)
 
-        r_centre = [0,0,self._z_0+1/self._curvature]
+        r_centre = np.array([0,0,self._z_0+1/self._curvature])
         normal = point - r_centre
         normal /= np.linalg.norm(normal)
         normal = normal * np.sign( self._curvature )
 
-        return normal
+        return np.array(normal)
 
     def intercept(self, ray):
         """
@@ -153,6 +153,113 @@ class SphericalElement(OpticalElement):
         """
         return self._curvature
        
+
+class SphericalVLSGrating(SphericalElement):
+    """
+    A class for a concave variable line spaced (VLS) grating.
+    It has spherical curvature, so is a child of the SphericalElement class.
+    Uses the physics.diffract() method in propagate_ray().
+
+    Attributes:
+        _z_0 (float) : Where the surface intercepts the optical (z) axis.
+        _curvature (float) : The curvature of the surface (1/Radius).
+        _central_groove_density (int) : The lines / mm in the centre of the grating.
+        _VLS_coefficients (Numpy array) : Array of the floats for the polynomial determining how the line density changes.
+            - uses n(w) = n_0(1 + b_1 w + b_2 w^2)
+            - w is distance from centre in mm, positive towards the detector.
+         _groove_axis (Numpy array) : 3D normalised vector defining what direction the grooves are (perpendicular across the grooves)
+        _width (float) : Width of the rectangular grating in mm
+        _length (float) : Length of the rectangular grating in mm (Dispersion direction)
+        _order (int) : The diffraction order
+    """
+    def __init__(self, z_0=0.0, curvature=0.0, central_groove_density=120, VLS_coefficients=[7.3e-3, 4.1e-5], groove_axis=[0, 1, 0], width=30, length=50, order=0):
+        """
+        Initialise the object
+        
+        Args:
+            z_0 (float) : Where the surface intercepts the optical (z) axis.
+            curvature (float) : The curvature of the surface (1/Radius).
+            central_groove_density (int) : The lines / mm in the centre of the grating.
+            VLS_coefficients (Numpy array) : Array of the floats for the polynomial determining how the line density changes.
+            groove_axis (Numpy array) : 3D normalised vector defining what direction the grooves are (perpendicular)
+            width (float) : Width of the rectangular grating in mm
+            length (float) : Length of the rectangular grating in mm
+            order (int) : Diffraction order
+        """
+        super().__init__(z_0, np.inf, curvature)
+        self._central_groove_density = central_groove_density
+        self._VLS_coefficients = np.array(VLS_coefficients)
+        self._groove_axis = np.array(groove_axis) / np.linalg.norm(groove_axis)
+        self._width = width
+        self._length = length
+        self._order = order
+
+    def propagate_ray(self, ray):
+        interception = self.intercept(ray)
+
+        if interception is None:
+            return
+
+        normal = self.calc_normal(interception, ray)
+        n_w = self.local_groove_density(interception)
+        g = self.local_groove_direction(normal)
+        diffracted_direc = ph.diffract(ray.direc(), normal, g, self.order(), ray.wavelength(), n_w)
+
+        if diffracted_direc is None:
+            return
+
+        ray.append(interception, diffracted_direc)
+        return
+
+    def intercept(self, ray):
+        interception = super().intercept(ray)
+
+        if interception is None:
+            return None
+
+        # Check the interception is within the rectangle
+        if np.abs(interception[1]) > 0.5 * self.length():
+            return None
+        elif np.abs(interception[0]) > 0.5 * self.width():
+            return None
+        else:
+            return interception
+
+    # VLS Helpers
+    def local_groove_density(self, point):
+        w_vector = point - np.array([0, 0, self.z_0()])
+        w = np.dot(w_vector, self.groove_axis())
+        n_0 = self.central_groove_density()
+        n_w = n_0 * (1 + self.b1() * w + self.b2() * w**2)
+        return n_w
+
+    def local_groove_direction(self, normal):
+        a = self.groove_axis()
+        n = normal
+        g = (a - np.dot(a, n) * n) / np.linalg.norm(a - np.dot(a, n) * n)
+        return g
+    
+    # Access Functions
+    def central_groove_density(self):
+        return self._central_groove_density
+
+    def b1(self):
+        return self._VLS_coefficients[0]
+
+    def b2(self):
+        return self._VLS_coefficients[1]
+
+    def groove_axis(self):
+        return self._groove_axis
+
+    def width(self):
+        return self._width
+
+    def length(self):
+        return self._length
+
+    def order(self):
+        return self._order
 
 class SphericalRefraction(SphericalElement):
     """

@@ -73,7 +73,7 @@ def diffract(direc, normal, groove_direc, m, wavelength, grooves):
         groove_direc (Numpy array) : 3D normalised vector of the perpendicular direction to the grating's grooves.
         m (int) : The order of the diffraction that we are interested in.
         wavelength (float) : The wavelength of the light being diffracted in nanometres.
-        grooves (int) : The central number of grooves per millimetre.
+        grooves (int) : The number of grooves per millimetre at the interception point.
     
     Returns:
         direc_out (Numpy array) : 3D normalised vector of the new direction after the diffraction.
