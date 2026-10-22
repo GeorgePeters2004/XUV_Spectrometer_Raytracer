@@ -7,8 +7,8 @@ Updated: 22/10/26
 """
 import numpy as np
 import matplotlib.pyplot as plt
-from xuv_raytracer.elements import OpticalElement
-from genpolar import rtrings
+from xuv_raytracer.raytracer.elements import OpticalElement
+from xuv_raytracer.raytracer.genpolar import rtrings
 
 class Ray:
     """
@@ -18,17 +18,17 @@ class Ray:
         _pos (NumPy array) : 3-D Vector holding the position of the ray
         _direc (NumPy array) : 3-D Vector holding the direction of the ray
         _vertices (list) : An array that holds all of the vertices along the ray's path
-        _colour (float tuple) : The RGB colour of the ray.
+        _wavelength(float) : The wavelength of the ray in nanometres (default: 800 nm - the Ti:Sapphire driving laser)
     """
 
-    def __init__(self, pos=[0.0,0.0,0.0], direc=[0.0,0.0,1.0]):
+    def __init__(self, pos=[0.0,0.0,0.0], direc=[0.0,0.0,1.0], wavelength=800.0):
         """
         Initialise the object
 
         Args:
             pos (list) : 3-D Vector holding the position of the ray.
             direc (list) : 3-D Vector holding the direction of the ray.
-            colour (float tuple) : The RGB colour of the ray.
+            wavelength (float) : The wavelength of the ray in nanometres
         """
         # These 4 if statements ensure that the inputs are lists or arrays and ensures length 3
         if type(pos) is not list and not isinstance(pos, np.ndarray):
@@ -43,10 +43,17 @@ class Ray:
         if len(direc) != 3:
             raise Exception("Direction must be of length 3")
 
+        if not isinstance(wavelength, (int, float)):
+            raise Exception("Wavelength must be a number")
+
+        if not wavelength > 0:
+            raise Exception("Wavelength must be a positive value")
+
         self._pos = np.array(pos, dtype=float)
         self._direc = np.array(direc, dtype=float)
         self._direc = self._direc / np.linalg.norm(self._direc)
         self._vertices = [self._pos]
+        self._wavelength = wavelength
 
     def pos(self):
         """
@@ -74,6 +81,15 @@ class Ray:
             self._vertices (list) : List holding all of the points on the ray's path.
         """
         return self._vertices
+
+    def wavelength(self):
+        """
+        Access method for the wavelength of the ray
+
+        Returns:
+            self._wavelength (float) : The wavelength of the ray in nanometres
+        """
+        return self._wavelength
     
 
     def append(self, pos, direc):
@@ -117,7 +133,7 @@ class RayBundle():
     Attributes:
         _rays (Ray list) : The list of rays inside the ray bundle.
     """
-    def __init__(self, rmax=5., nrings=5, multi=6):
+    def __init__(self, rmax=5., nrings=5, multi=6, wavelength=800.0):
         """
         The init method that runs when a RayBundle is instantiated.
 
@@ -125,6 +141,7 @@ class RayBundle():
             rmax (float) : The maximum radius (from the optical axis) of the bundle.
             nrings (int) : The number of rings in the circle.
             multi (int) : A multiplier to determine the number of rays per ring (N_points = N_ring * multi).
+            wavelength (float) : The wavelength of the rays in nanometres
         """
         self._rays = []
 
@@ -132,7 +149,7 @@ class RayBundle():
 
         # Instantiate the list of given points
         for p in points:
-            ray = Ray(pos=[p[0], p[1], 0])
+            ray = Ray(pos=[p[0], p[1], 0], wavelength=wavelength)
             self._rays.append(ray)
 
     def propagate_bundle(self, elements):

@@ -4,7 +4,7 @@ A module that stores optical elements in the system, e.g. spherical refractive s
 George Peters - 15/05/25
 """
 import numpy as np
-import xuv_raytracer.physics as ph
+import xuv_raytracer.raytracer.physics as ph
 
 
 class OpticalElement:
