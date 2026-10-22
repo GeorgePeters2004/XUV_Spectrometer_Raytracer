@@ -22,20 +22,23 @@ class SphericalElement(OpticalElement):
     A parent class for all spherical surfaces - refractors and reflectors.
 
     Attributes:
-        _z_0 (float) : Where the surface intercepts the optical (z) axis.
-        _aperture (float) : The maximum extent of the surface from the optical (z) axis.
+        _position (Numpy Array) : The position of the surface's centre.
+        _orientation (Numpy array) : A unit vector for the direction the surface faces at its centre
+        _aperture (float) : The maximum extent of the surface from the element's axis.
         _curvature (float) : The curvature of the surface (1/Radius).
     """
-    def __init__(self, z_0=100., aperture=6., curvature=-0.02):
+    def __init__(self, position=[0.0, 0.0, 0.0], orientation=[0.0, 0.0, 1.0], aperture=6., curvature=-0.02):
         """
         Initiates the SphericalSurface objects
 
         Args:
-            z_0 (float) : The intercept between the surface and the optical axis.
+            position (Numpy Array) : The position of the surface's centre.
+            orientation (Numpy array) : A unit vector for the direction the surface faces at its centre
             aperture (float) : The maximum extend of the surface from the optical axis.
             curvature (float) : The curvature of the surface (1/radius).
         """
-        self._z_0 = z_0
+        self._position = np.array(position)
+        self._orientation = np.array(orientation) / np.linalg.norm(orientation)
         self._aperture = aperture
         self._curvature = curvature
 
@@ -51,14 +54,16 @@ class SphericalElement(OpticalElement):
             normal (Numpy array) : 3D normalised vector specifiying the normal to the surface.
         """
 
+        # Flat Surface (plus or minus the orientation vector)
         if self._curvature == 0:
-            normal = [0,0,np.sign(-1 * ray.direc()[2])]
+            normal = -np.sign(np.dot(ray.direc(), self.orientation())) * self.orientation()
             return np.array(normal)
 
-        r_centre = np.array([0,0,self._z_0+1/self._curvature])
+        # Curved Surface (C = P + (1/c) a)
+        r_centre = self.position() + self.orientation()/self.curvature()
         normal = point - r_centre
         normal /= np.linalg.norm(normal)
-        normal = normal * np.sign( self._curvature )
+        normal *= -np.sign(np.dot(ray.direc(), normal))
 
         return np.array(normal)
 
@@ -77,14 +82,33 @@ class SphericalElement(OpticalElement):
         ray_pos = ray.pos()
         ray_direc = ray.direc()
 
+        # Flat Surface
         if self._curvature == 0:
-            l = ( self._z_0 - ray_pos[2] ) / ray_direc[2]
+            dot = np.dot(ray_direc, self.orientation())
+
+            # The ray runs parallel with the surface!
+            if np.abs(dot) < 1e-12:
+                return None
+
+            l = np.dot(self.position() - ray_pos, self.orientation())
+            l /= np.dot(ray_direc, self.orientation())
+
+            # The crossing is behind the ray
+            if not l > 1e-9:
+                return None
+
             intercept = ray_pos + l * ray_direc
+            in_aperture = self.inside_aperture(intercept)
+
+            if not in_aperture:
+                return None
+
+            return intercept
         else:
 
             # Takes care about the fact that the centre of the sphere is not at the origin.
             radius = 1 / self._curvature
-            r_centre = [0,0,self._z_0+radius]
+            r_centre = self.position() + self.orientation()/self.curvature()
             r_ray = ray_pos - r_centre
 
             dot = np.dot(r_ray, ray_direc)
@@ -97,21 +121,34 @@ class SphericalElement(OpticalElement):
             # Deals with there being 2 points of intersection.
             l_min = -1 * dot - np.sqrt( discriminant )
             l_add = -1 * dot + np.sqrt( discriminant )
+            l_vals = (l_min, l_add)
 
-            if l_min < 0:
-                l = l_add
-            else:
-                if self._curvature < 0:
-                    l = max( l_min, l_add ) 
-                else:
-                    l = min( l_min, l_add )
+            for l in l_vals:
+                if not l > 1e-9:
+                    continue
 
-            intercept = ray_pos + l * ray_direc
+                intercept = ray_pos + l * ray_direc
 
+                # Interception on far side of the sphere if dot < 0
+                dot = np.dot(intercept - r_centre, self.position() - r_centre)
+                if dot < 0:
+                    continue
+
+                in_aperture = self.inside_aperture(intercept)
+                if not in_aperture:
+                    continue
+
+                return intercept
+            
+        return None
+
+    def inside_aperture(self, point):
         # Checks that the interception is within the aperture radius
-        if intercept[0]**2 + intercept[1]**2 > self._aperture**2:
-            return None
-        return intercept
+        r = point - self.position()
+        distance_square = np.linalg.norm(r)**2 - np.dot(r, self.orientation())**2
+        if distance_square > self._aperture**2:
+            return False
+        return True
     
     def propagate_ray(self, ray):
         """
@@ -126,14 +163,23 @@ class SphericalElement(OpticalElement):
         if interception is not None:
             ray.append(interception, ray.direc())
 
-    def z_0(self):
+    def position(self):
         """
-        Access method for the z_0 variable.
+        Access method for the position variable.
 
         Returns:
-            self._z_0 (float) : The intercept of the surface with the optical axis.
+            self._position (Numpy Array) : The position of the surface's centre.
         """
-        return self._z_0
+        return self._position
+
+    def orientation(self):
+            """
+            Access method for the orientation variable.
+    
+            Returns:
+                self._orientation (Numpy Array) : A unit vector for the direction the surface faces at its centre
+            """
+            return self._orientation
     
     def aperture(self):
         """
@@ -161,7 +207,8 @@ class SphericalVLSGrating(SphericalElement):
     Uses the physics.diffract() method in propagate_ray().
 
     Attributes:
-        _z_0 (float) : Where the surface intercepts the optical (z) axis.
+        _position (Numpy Array) : The position of the surface's centre.
+        _orientation (Numpy array) : A unit vector for the direction the surface faces at its centre
         _curvature (float) : The curvature of the surface (1/Radius).
         _central_groove_density (int) : The lines / mm in the centre of the grating.
         _VLS_coefficients (Numpy array) : Array of the floats for the polynomial determining how the line density changes.
@@ -172,12 +219,13 @@ class SphericalVLSGrating(SphericalElement):
         _length (float) : Length of the rectangular grating in mm (Dispersion direction)
         _order (int) : The diffraction order
     """
-    def __init__(self, z_0=0.0, curvature=0.0, central_groove_density=120, VLS_coefficients=[7.3e-3, 4.1e-5], groove_axis=[0, 1, 0], width=30, length=50, order=0):
+    def __init__(self, position=(0.0, 0.0, 0.0), orientation=(0.0, 0.0, 1.0), curvature=0.0, central_groove_density=120, VLS_coefficients=[7.3e-3, 4.1e-5], groove_axis=[0, 1, 0], width=30, length=50, order=0):
         """
         Initialise the object
         
         Args:
-            z_0 (float) : Where the surface intercepts the optical (z) axis.
+            position (Numpy Array) : The position of the surface's centre.
+            orientation (Numpy array) : A unit vector for the direction the surface faces at its centre
             curvature (float) : The curvature of the surface (1/Radius).
             central_groove_density (int) : The lines / mm in the centre of the grating.
             VLS_coefficients (Numpy array) : Array of the floats for the polynomial determining how the line density changes.
@@ -186,13 +234,18 @@ class SphericalVLSGrating(SphericalElement):
             length (float) : Length of the rectangular grating in mm
             order (int) : Diffraction order
         """
-        super().__init__(z_0, np.inf, curvature)
+        super().__init__(position, orientation, np.inf, curvature)
+
         self._central_groove_density = central_groove_density
         self._VLS_coefficients = np.array(VLS_coefficients)
         self._groove_axis = np.array(groove_axis) / np.linalg.norm(groove_axis)
         self._width = width
         self._length = length
         self._order = order
+
+        # Check groove axis lies in the grating surface at its centre
+        if not np.abs(np.dot(self.groove_axis(), self.orientation())) < 1e-12:
+            raise Exception("Groove axis should lie in grating surface at its centre")
 
     def propagate_ray(self, ray):
         interception = self.intercept(ray)
@@ -211,24 +264,23 @@ class SphericalVLSGrating(SphericalElement):
         ray.append(interception, diffracted_direc)
         return
 
-    def intercept(self, ray):
-        interception = super().intercept(ray)
+    def inside_aperture(self, point):
 
-        if interception is None:
-            return None
+        r = point - self.position()
+        w = np.dot(r, self.groove_axis()) # Distance across the grooves
+        groove_direction = np.cross(self.orientation(), self.groove_axis())
+        groove_direction /= np.linalg.norm(groove_direction)
+        u = np.dot(r, groove_direction) # Distance along the grooves
 
-        # Check the interception is within the rectangle
-        if np.abs(interception[1]) > 0.5 * self.length():
-            return None
-        elif np.abs(interception[0]) > 0.5 * self.width():
-            return None
-        else:
-            return interception
+        if np.abs(w) > self.length() / 2 or np.abs(u) > self.width() / 2:
+            return False
+
+        return True
 
     # VLS Helpers
     def local_groove_density(self, point):
-        w_vector = point - np.array([0, 0, self.z_0()])
-        w = np.dot(w_vector, self.groove_axis())
+        r = point - self.position()
+        w = np.dot(r, self.groove_axis())
         n_0 = self.central_groove_density()
         n_w = n_0 * (1 + self.b1() * w + self.b2() * w**2)
         return n_w
@@ -266,24 +318,26 @@ class SphericalRefraction(SphericalElement):
     A class for a spherical surface that refracts light
 
     Attributes:
-        _z_0 (float) : Where the surface intercepts the optical (z) axis.
+        _position (Numpy Array) : The position of the surface's centre.
+        _orientation (Numpy array) : A unit vector for the direction the surface faces at its centre
         _aperture (float) : The maximum extent of the surface from the optical (z) axis.
         _curvature (float) : The curvature of the surface (1/Radius).
         _n_1 (float) : The refractive index to the left of the surface.
         _n_2 (float) : The refractive index to the right of the surface.
     """
-    def __init__(self, z_0=0.0, aperture=0.0, curvature=0.0, n_1=0.0, n_2=0.0):
+    def __init__(self, position=[0.0, 0.0, 0.0], orientation=[0.0, 0.0, 1.0], aperture=0.0, curvature=0.0, n_1=0.0, n_2=0.0):
         """
         Initialise the object
 
         Args:
-            z_0 (float) : The intercept of the surface with the z-axis.
+            position (Numpy Array) : The position of the surface's centre.
+            orientation (Numpy array) : A unit vector for the direction the surface faces at its centre
             aperture (float) : Maximum extent of the surface from the optical axis.
             curvature (float) : The radius of curvature of the surface.
             n_1 (float) : The refractive index of the first material z<z0.
             n_2 (float) : The refractive index of the second material z>z0.
         """
-        super().__init__(z_0, aperture, curvature)
+        super().__init__(position, orientation, aperture, curvature)
         self._n_1 = n_1
         self._n_2 = n_2
 
@@ -310,11 +364,11 @@ class SphericalRefraction(SphericalElement):
         Method that will calculate the focal point of the element.
 
         Returns:
-            f_point (float) : The focal point (z coordinate)
+            f_point (Numpy array) : The focal point
         """
         radius = 1 / self._curvature
         f_length = radius * 1 / (self._n_2 - self._n_1)
-        f_point = self._z_0 + radius + f_length
+        f_point = self.position() + (radius + f_length) * self.orientation()
 
         return f_point
     
@@ -330,7 +384,12 @@ class SphericalRefraction(SphericalElement):
         # Only propagates if the ray actually intercepts the surface
         if interception is not None:
             normal = self.calc_normal(interception, ray)
-            new_direction = ph.refract(ray.direc(), normal, self._n_1, self._n_2)
+
+            # Swap n_1 and n_2 if this dot product is less than zero
+            if np.dot(ray.direc(), self.orientation()) < 0:
+                n_1, n_2 = self._n_2, self._n_1
+
+            new_direction = ph.refract(ray.direc(), normal, n_1, n_2)
 
             # Deals with TIR
             if new_direction is not None:
@@ -344,31 +403,33 @@ class SphericalReflection(SphericalElement):
     A class for a spherical surface that reflects light
 
     Attributes:
-        _z_0 (float) : Where the surface intercepts the optical (z) axis.
+        _position (Numpy Array) : The position of the surface's centre.
+        _orientation (Numpy array) : A unit vector for the direction the surface faces at its centre
         _aperture (float) : The maximum extent of the surface from the optical (z) axis.
         _curvature (float) : The curvature of the surface (1/Radius).
     """
-    def __init__(self, z_0=100., aperture=6., curvature=-0.02):
+    def __init__(self, position=[0.0, 0.0, 0.0], orientation=[0.0, 0.0, 1.0], aperture=6., curvature=-0.02):
         """
-        Initiate the SphericalRefraction objects
+        Initiate the SphericalReflection objects
 
         Args:
-            z_0 (float) : The point where the surface intersects the optical axis.
+            position (Numpy Array) : The position of the surface's centre.
+            orientation (Numpy array) : A unit vector for the direction the surface faces at its centre
             aperture (float) : The maximum extent of the surface from the optical axis.
             curvature (float) : The curvature (1/radius) of the surface.
         """
-        super().__init__(z_0, aperture, curvature)
+        super().__init__(position, orientation, aperture, curvature)
 
     def focal_point(self):
         """
         Method that will calculate the focal point of the element.
 
         Returns:
-            f_point (float) : The focal point (z coordinate)
+            f_point (Numpy array) : The focal point
         """
         radius = 1 / self._curvature
         focal_length = radius / 2
-        focal_point = self._z_0 + focal_length
+        focal_point = self.position() + focal_length * self.orientation()
         return focal_point
 
     def propagate_ray(self, ray):
@@ -378,13 +439,7 @@ class SphericalReflection(SphericalElement):
         Args:
             ray (Ray) : The ray that is being propagated
         """
-
-        # Deal with 0 curvature
-        if self._curvature == 0:
-            l = (self._z_0 - ray.pos()[2]) / ray.direc()[2]
-            interception = ray.pos() + l * ray.direc()
-        else:
-            interception = self.intercept(ray)
+        interception = self.intercept(ray)
 
         if interception is not None:
             normal = self.calc_normal(interception, ray)
