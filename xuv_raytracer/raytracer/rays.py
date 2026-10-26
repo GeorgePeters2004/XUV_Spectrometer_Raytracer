@@ -19,6 +19,7 @@ class Ray:
         _direc (NumPy array) : 3-D Vector holding the direction of the ray
         _vertices (list) : An array that holds all of the vertices along the ray's path
         _wavelength(float) : The wavelength of the ray in nanometres (default: 800 nm - the Ti:Sapphire driving laser)
+        _terminated (boolean) : A True/False flag to say if the ray should stop propagating.
     """
 
     def __init__(self, pos=[0.0,0.0,0.0], direc=[0.0,0.0,1.0], wavelength=800.0):
@@ -54,6 +55,7 @@ class Ray:
         self._direc = self._direc / np.linalg.norm(self._direc)
         self._vertices = [self._pos]
         self._wavelength = wavelength
+        self._terminated = False
 
     def pos(self):
         """
@@ -82,6 +84,17 @@ class Ray:
         """
         return self._vertices
 
+    def set_vertices(self, vertices):
+        """
+        Setter method for the list of vertices of the ray
+
+        Args:
+            vertices (list): An array that holds all of the vertices along the ray's path
+        """
+        self._vertices = vertices.copy()
+        self._pos = self._vertices[-1] # Ensures the position matches the final vertex
+        return
+
     def wavelength(self):
         """
         Access method for the wavelength of the ray
@@ -90,6 +103,22 @@ class Ray:
             self._wavelength (float) : The wavelength of the ray in nanometres
         """
         return self._wavelength
+
+    def terminated(self):
+        """
+        Access method for the terminated flag of the ray
+
+        Returns:
+            self._terminated (boolean) : The terminated flag.
+        """
+        return self._terminated
+
+    def set_terminated(self):
+        """
+        Sets the ray to terminated. It will now stop propagating
+        """
+        self._terminated = True
+        return
     
 
     def append(self, pos, direc):
@@ -125,15 +154,26 @@ class Ray:
         
         return self
 
+    def copy(self):
+        """
+        A method that returns a new Ray object, with the same attributes as this one.
+
+        Returns:
+            ray_copy (Ray) : An exact copy of this ray
+        """
+        ray_copy = Ray(pos=self.pos(), direc=self.direc(), wavelength=self.wavelength())
+        ray_copy.set_vertices(self.vertices())
+        return ray_copy
+
 
 class RayBundle():
     """
-    The RayBundle class will hold a bundle of rays that are in concentric circles, and transverse to the optical axis.
+    The RayBundle class will hold a bundle of rays that are in concentric circles, or a set list, and transverse to the optical axis.
 
     Attributes:
         _rays (Ray list) : The list of rays inside the ray bundle.
     """
-    def __init__(self, rmax=5., nrings=5, multi=6, wavelength=800.0):
+    def __init__(self, rmax=None, nrings=None, multi=None, wavelength=None, rays=None):
         """
         The init method that runs when a RayBundle is instantiated.
 
@@ -142,15 +182,63 @@ class RayBundle():
             nrings (int) : The number of rings in the circle.
             multi (int) : A multiplier to determine the number of rays per ring (N_points = N_ring * multi).
             wavelength (float) : The wavelength of the rays in nanometres
+            rays (Ray list) : An optional list of Ray objects that allows the rays in the bundle to be specified.
+        """        
+
+        # If no rays are specified, make a basic concentric ring of rays
+        if rays is None:
+            self._rays = []
+
+            points = rtrings(rmax, nrings, multi)
+
+            # Instantiate the list of given points
+            for p in points:
+                ray = Ray(pos=[p[0], p[1], 0], wavelength=wavelength)
+                self._rays.append(ray)
+        else: # If rays is specified, use them instead of making new ones
+            self._rays = list(rays)
+
+    def rays(self):
         """
-        self._rays = []
+        Accessor method for the bundle's list of rays
 
-        points = rtrings(rmax, nrings, multi)
+        Returns:
+            self._rays (Ray list) : The bundle's list of rays
+        """
+        return self._rays
 
-        # Instantiate the list of given points
-        for p in points:
-            ray = Ray(pos=[p[0], p[1], 0], wavelength=wavelength)
-            self._rays.append(ray)
+    def set_rays(self, rays):
+        """
+        Setter method for the bundle's rays
+
+        Args:
+            rays (Ray list) : The list of rays to replace the bundle
+        """
+        self._rays = list(rays)
+        return
+
+    def remove_lost_rays(self, n_vertices):
+        """
+        A function that removes any rays that either missed an element entirely, or hit outside the provided aperture
+
+        Args:
+            n_vertices (int) : The number of vertices that a ray that hit every element will have
+
+        Returns:
+            n_lost (int) : The number of rays removed
+        """
+        kept = []
+
+        for ray in self.rays():
+
+            # If a ray doesn't have n vertices, it means it missed one of the elements.
+            if len(ray.vertices()) == n_vertices:
+                kept.append(ray)
+
+        n_lost = len(self.rays()) - len(kept)
+        self.set_rays(kept)
+        return n_lost
+
 
     def propagate_bundle(self, elements):
         """
@@ -164,27 +252,45 @@ class RayBundle():
                 if isinstance(element, OpticalElement) and isinstance(ray, Ray):
                     element.propagate_ray(ray)
 
-    def track_plot(self, elements=None):
+    def track_plot(self, elements=None, Figure=None, colour=(255/255,105/255,97/255), label=None):
         """
         Method that will plot the tracks of each ray.
 
         Args:
             elements (OpticalElement list) : List of rays that should be drawn on the graph
                 - Note this does not include surfaces - only lenses.
+            Figure (Figure) : The figure that we want to draw on, rather than making a new one
+            colour (tuple) : Three RGB values for the colour of the ray bundle
+            label (String) : The label for this raybundle trace
 
         Returns:
             Figure (Figure) : The figure that has the ray paths plotted on it.
         """
-        Figure, ax = plt.subplots(tight_layout=True)
-        ax.set_title("Ray Bundle Paths")
-        ax.set_xlabel("Position (Z)")
-        ax.set_ylabel("Position (Y)")
-        ax.grid(True)
 
-        for ray in self._rays:
+        if Figure is None:
+            Figure, ax = plt.subplots(tight_layout=True)
+
+            ax.set_title("Ray Bundle Paths")
+            ax.set_xlabel("Position (Z)")
+            ax.set_ylabel("Position (X)")
+            ax.grid(True)
+            
+        else:
+            ax = Figure.gca()
+
+        for (i, ray) in enumerate(self._rays):
             if isinstance(ray, Ray):
                 points = np.array( ray.vertices() )
-                ax.plot(points[:, 2], points[:, 1], color=(255/255,105/255,97/255))
+
+                if i == 0:
+                    line_label = label
+                else:
+                    line_label = None
+                
+                ax.plot(points[:, 2], points[:, 0], color=colour, label=line_label)
+
+        if label is not None:
+            ax.legend()
 
         if elements is None:
             return Figure
@@ -273,3 +379,64 @@ class RayBundle():
 
         return spot_plot
 
+    def best_focus(self, direction = None):
+        """
+        Function that calculates the best focus of a ray bundle.
+        
+        Args:
+            direction (list) : Optional focusing direction
+        
+        Returns:
+            focus (Numpy array) : The focus point of our beam with the lowest rms.
+            t_best (float) : The distance from the end point where the focus lies
+        """
+
+        # Get the end points of the rays, and store in a list
+        end_points = np.array([ray.vertices()[-1] for ray in self.rays()])
+
+        # Get the directions of each ray
+        directions = np.array([ray.direc() for ray in self.rays()])
+
+        # Find mean of the directions (for the beam axis) and mean of the end points (for reference point)
+        beam_axis = np.mean(directions, axis = 0)
+        beam_axis /= np.linalg.norm(beam_axis)
+
+        reference_point = np.mean(end_points, axis = 0)
+
+        back = np.dot(reference_point - end_points, beam_axis) # back_i for every ray
+        d_beam = np.dot(directions, beam_axis) # d_i dot b for every ray
+
+        if direction is None:
+
+            # Find two vectors perpendicular to the beam axis, using helper (0, 1, 0)
+            u = np.cross(beam_axis, np.array([0, 1, 0]))
+            u /= np.linalg.norm(u)
+    
+            v = np.cross(beam_axis, u)
+            v /= np.linalg.norm(v)
+    
+            # pos_u = a_u + t * b_u
+            a_u = np.dot(end_points - reference_point, u) + back * np.dot(directions, u) / d_beam
+            b_u = np.dot(directions, u) / d_beam
+    
+            # pos_v = a_v + t * b_v
+            a_v = np.dot(end_points - reference_point, v) + back * np.dot(directions, v) / d_beam
+            b_v = np.dot(directions, v) / d_beam
+
+            cov_sum = np.cov(a_u, b_u, bias=True)[0, 1] + np.cov(a_v, b_v, bias=True)[0, 1]
+            t_best = -cov_sum / (np.var(b_u) + np.var(b_v))
+        else:
+            # Only use the given direction as u and ignore v
+            u = np.array(direction, dtype=float)
+            u = u - np.dot(u, beam_axis) * beam_axis # Leaves the component perpendicular to the beam axis
+            u /= np.linalg.norm(u)
+
+            a_u = np.dot(end_points - reference_point, u) + back * np.dot(directions, u) / d_beam
+            b_u = np.dot(directions, u) / d_beam
+            t_best = -np.cov(a_u, b_u, bias=True)[0, 1] / np.var(b_u)     
+
+        # Find focus point
+        s = (back + t_best) / d_beam
+        focus = np.mean(end_points + s[:, None] * directions, axis = 0)
+
+        return focus, t_best
