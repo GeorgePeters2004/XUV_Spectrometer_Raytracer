@@ -12,7 +12,7 @@ from xuv_raytracer.raytracer.genpolar import rtrings
 
 class Ray:
     """
-    A ray that can propagate through space and refract through materials.
+    A ray that can propagate through space and intereact with materials.
 
     Attributes:
         _pos (NumPy array) : 3-D Vector holding the position of the ray
@@ -113,11 +113,14 @@ class Ray:
         """
         return self._terminated
 
-    def set_terminated(self):
+    def set_terminated(self, terminated = True):
         """
         Sets the ray to terminated. It will now stop propagating
+
+        Args:
+            terminated (boolean) : The terminated flag, assumed to be true by default
         """
-        self._terminated = True
+        self._terminated = terminated
         return
     
 
@@ -163,6 +166,7 @@ class Ray:
         """
         ray_copy = Ray(pos=self.pos(), direc=self.direc(), wavelength=self.wavelength())
         ray_copy.set_vertices(self.vertices())
+        ray_copy.set_terminated(self.terminated())
         return ray_copy
 
 
@@ -217,12 +221,9 @@ class RayBundle():
         self._rays = list(rays)
         return
 
-    def remove_lost_rays(self, n_vertices):
+    def remove_lost_rays(self):
         """
         A function that removes any rays that either missed an element entirely, or hit outside the provided aperture
-
-        Args:
-            n_vertices (int) : The number of vertices that a ray that hit every element will have
 
         Returns:
             n_lost (int) : The number of rays removed
@@ -231,8 +232,8 @@ class RayBundle():
 
         for ray in self.rays():
 
-            # If a ray doesn't have n vertices, it means it missed one of the elements.
-            if len(ray.vertices()) == n_vertices:
+            # If a ray is marked as terminanted, remove it
+            if not ray.terminated():
                 kept.append(ray)
 
         n_lost = len(self.rays()) - len(kept)
@@ -249,8 +250,13 @@ class RayBundle():
         """
         for element in elements:
             for ray in self._rays:
+                if ray.terminated():
+                    continue
+
                 if isinstance(element, OpticalElement) and isinstance(ray, Ray):
                     element.propagate_ray(ray)
+
+        return
 
     def track_plot(self, elements=None, Figure=None, colour=(255/255,105/255,97/255), label=None):
         """
@@ -403,40 +409,68 @@ class RayBundle():
 
         reference_point = np.mean(end_points, axis = 0)
 
-        back = np.dot(reference_point - end_points, beam_axis) # back_i for every ray
         d_beam = np.dot(directions, beam_axis) # d_i dot b for every ray
 
+        crossings = self.plane_crossings(reference_point, beam_axis)
+
         if direction is None:
+            # Find two vectors perpendicular to the beam axis, using helper vector
+            helper = [0, 1, 0] if abs(beam_axis[1]) < 0.9 else [1, 0, 0]
 
-            # Find two vectors perpendicular to the beam axis, using helper (0, 1, 0)
-            u = np.cross(beam_axis, np.array([0, 1, 0]))
+            u = np.cross(beam_axis, np.array(helper))
             u /= np.linalg.norm(u)
-    
             v = np.cross(beam_axis, u)
-            v /= np.linalg.norm(v)
-    
-            # pos_u = a_u + t * b_u
-            a_u = np.dot(end_points - reference_point, u) + back * np.dot(directions, u) / d_beam
-            b_u = np.dot(directions, u) / d_beam
-    
-            # pos_v = a_v + t * b_v
-            a_v = np.dot(end_points - reference_point, v) + back * np.dot(directions, v) / d_beam
-            b_v = np.dot(directions, v) / d_beam
-
-            cov_sum = np.cov(a_u, b_u, bias=True)[0, 1] + np.cov(a_v, b_v, bias=True)[0, 1]
-            t_best = -cov_sum / (np.var(b_u) + np.var(b_v))
+            axes = [u, v]
         else:
             # Only use the given direction as u and ignore v
             u = np.array(direction, dtype=float)
             u = u - np.dot(u, beam_axis) * beam_axis # Leaves the component perpendicular to the beam axis
             u /= np.linalg.norm(u)
 
-            a_u = np.dot(end_points - reference_point, u) + back * np.dot(directions, u) / d_beam
-            b_u = np.dot(directions, u) / d_beam
-            t_best = -np.cov(a_u, b_u, bias=True)[0, 1] / np.var(b_u)     
+            axes = [u] 
 
-        # Find focus point
-        s = (back + t_best) / d_beam
-        focus = np.mean(end_points + s[:, None] * directions, axis = 0)
+        cov_sum = 0
+        var_sum = 0
+        for axis in axes:
+            a = np.dot(crossings - reference_point, axis)
+            b = np.dot(directions, axis) / d_beam
+            
+            cov_sum += np.cov(a, b, bias=True)[0, 1]
+            var_sum += np.var(b)
+
+        t_best = -cov_sum / var_sum
+
+        # Find focus point: the centre of where the rays cross the plane at t_best
+        focus = np.mean(self.plane_crossings(reference_point + t_best * beam_axis, beam_axis), axis = 0)
 
         return focus, t_best
+
+    def plane_crossings(self, point, normal):
+        """
+        A function to determine where all the rays in a bundle cross a given plane.
+
+        Args:
+            point (Numpy array) : The 3D point defining the plane's position
+            normal (Numpy array) : The 3D normalised vector defining the plane's orientation
+
+        Returns:
+            crossings (Numpy array) : One crossing per ray through the plane
+        """
+
+        # The end point of each ray
+        ends = np.array([ray.pos() for ray in self.rays()])
+
+        # The direction of each ray
+        direcs = np.array([ray.direc() for ray in self.rays()])
+
+        # Plane passes through point (P) with normal n
+        # A point x is on the plane when (x - P) dot n = 0 (the vector from x to P lies along the plane)
+        # Ray i is a straight line from its current end point: x = e_i + s * d_i
+        # Substituting this x into the plane equation yields s_i = ((P - e_i) dot n) / (d_i dot n)
+        s = np.dot(point - ends, normal) / np.dot(direcs, normal)
+
+        # s is the distance from the end point to the crossing, so we can calculate the crossing point
+        crossings = ends + s[:, None] * direcs
+
+        return crossings
+    

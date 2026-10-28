@@ -1,9 +1,10 @@
 """
 elements.py
-A module that stores optical elements in the system, e.g. spherical refractive surfaces.
+A module that stores optical elements in the system, e.g. spherical mirrors and gratings
 George Peters - 15/05/25
 """
 import numpy as np
+import matplotlib.pyplot as plt
 import xuv_raytracer.raytracer.physics as ph
 
 
@@ -16,10 +17,308 @@ class OpticalElement:
     def propagate_ray(self, ray):
         raise NotImplementedError('propagate_ray() needs to be implemented in derived classes')
 
-
-class SphericalElement(OpticalElement):
+class PlaneElement(OpticalElement):
     """
-    A parent class for all spherical surfaces - refractors and reflectors.
+    The PlaneElement class, essentially a spherical element with 0 curvature
+
+    Attributes:
+        _position (Numpy Array) : The position of the surface's centre.
+        _orientation (Numpy array) : A unit vector for the direction the surface faces at its centre
+        _aperture (float) : The maximum extent of the element from the optical axis.
+    """
+    def __init__(self, position=[0, 0, 0], orientation=[0, 0, 1], aperture=100.):
+        """
+        Initiate the PlaneElement object.
+
+        Args:
+            position (Numpy Array) : The position of the surface's centre.
+            orientation (Numpy array) : A unit vector for the direction the surface faces at its centre
+            aperture (float) : The maximum extent of the element from the optical axis.
+        """
+        self._position = np.array(position, dtype=float)
+        self._orientation = np.array(orientation, dtype=float) / np.linalg.norm(orientation)
+        self._aperture = aperture
+
+        return
+
+    def position(self):
+        """
+        Access method for the position of the element
+
+        Returns:
+            _position (Numpy Array) : The position of the surface's centre.
+        """
+        return self._position
+
+    def orientation(self):
+        """
+        Access method for the orientation of the element
+
+        Returns:
+            _orientation (Numpy array) : A unit vector for the direction the surface faces at its centre
+        """
+        return self._orientation
+
+    def aperture(self):
+        """
+        Access method for the aperture of the surface.
+
+        Returns:
+            self._aperture (float) : The maximum extent of the surface from the optical axis.
+        """
+        return self._aperture
+
+    def intercept(self, ray):
+        """
+        Function that calculates the interception between a ray and the planar element.
+
+        Args:
+            ray (Ray) : The ray being intercepted.
+
+        Returns:
+            intercept (Numpy array) : The 3D vector of the interception point.
+        """
+        ray_pos = ray.pos()
+        ray_direc = ray.direc()
+
+        dot = np.dot(ray_direc, self.orientation())
+        
+        # The ray runs parallel with the surface!
+        if np.abs(dot) < 1e-12:
+            return None
+
+        l = np.dot(self.position() - ray_pos, self.orientation())
+        l /= np.dot(ray_direc, self.orientation())
+
+        # The crossing is behind the ray
+        if not l > 1e-9:
+            return None
+
+        intercept = ray_pos + l * ray_direc
+        in_aperture = self.inside_aperture(intercept)
+
+        if not in_aperture:
+            return None
+
+        return intercept
+
+    def propagate_ray(self, ray):
+        """
+        Propagate function that propagates the ray through the element.
+        By default the direction will remain unchanged.
+
+        Args:
+            ray (Ray) : The ray being intercepted.
+        """
+        interception = self.intercept(ray)
+        
+        if interception is not None:
+            ray.append(interception, ray.direc())
+        else:
+            ray.set_terminated()
+
+        return
+
+    def inside_aperture(self, point):
+        """
+        A function to check if the point lies within the element's aperture
+
+        Args:
+            point (Numpy array) : The 3D position of the point
+
+        Returns:
+            True / False (boolean) : Whether the point lies within the aperture or not
+        """
+        # Checks that the interception is within the aperture radius
+        r = point - self.position()
+        distance_square = np.linalg.norm(r)**2 - np.dot(r, self.orientation())**2
+        if distance_square > self._aperture**2:
+            return False
+        return True
+
+    def calc_normal(self, point, ray):
+        """
+        A function to calculate the normal to the surface at a given point
+
+        Args:
+            point (Numpy array) : The 3D point on the element
+            ray (Ray) : The ray intercepting the element
+
+        Returns:
+            normal (Numpy array) : The normal to the surface at the given point
+        """
+        normal = -np.sign(np.dot(ray.direc(), self.orientation())) * self.orientation()
+        normal = np.array(normal) / np.linalg.norm(normal)
+        return normal
+    
+
+class Detector(PlaneElement):
+    """
+    A class for a detector, which has a rectangular rather than circular aperture.
+
+    Attributes:
+        _position (Numpy Array) : The position of the surface's centre.
+        _orientation (Numpy array) : A unit vector for the direction the surface faces at its centre
+        _width (float) : The width of the detector
+        _height (float) : The height of the detector
+        _across_axis (Numpy array) : The axis across the detector (in the detector plane)
+        _along_axis (Numpy array) : The axis along the detector (in the detector plane)
+    """
+    def __init__(self, position=[0.0, 0.0, 0.0], orientation=[0.0, 0.0, 1.0], up=[0.0, 1.0, 0.0], width=np.inf, height=np.inf):
+        super().__init__(position, orientation, np.inf)
+
+        # Remove the component of "up" along the normal, so it lies in the detector plane
+        across = np.array(up, dtype=float)
+        across = across - np.dot(across, self.orientation()) * self.orientation()
+
+        # If "up" was parallel to the normal, nothing is left to define it as an axis
+        if np.linalg.norm(across) < 1e-12:
+            raise Exception("up must not be parallel to the detector's orientation")
+
+        # Define the axes of the detector
+        self._across_axis = across / np.linalg.norm(across)
+        self._along_axis = np.cross(self.orientation(), self._across_axis)
+
+        self._width = width
+        self._height = height
+
+        return
+
+    # Access Methods
+    def across_axis(self):
+        return self._across_axis
+
+    def along_axis(self):
+        return self._along_axis
+
+    def width(self):
+        return self._width
+
+    def height(self):
+        return self._height
+
+    def coordinates(self, point):
+        """
+        Converts 3D points in free space to a coordinate system on the detector plane
+
+        Args:
+            point (Numpy array) : The point to convert to the detector's coordinates
+
+        Returns:
+            coordinates_along (Numpy array) : How far along the detector the point lies
+            coordinates_across (Numpy array) : How far across the detector the point lies
+        """
+        # Vector from sensor's centre to the point
+        r = np.array(point) - self.position()
+
+        # Compont of vector along both axes of the detector
+        coordinates_along = np.dot(r, self.along_axis())
+        coordinates_across = np.dot(r, self.across_axis())
+
+        return coordinates_along, coordinates_across
+
+    def inside_aperture(self, point):
+        """
+        A function to check if the point lies within the element's aperture
+        Overrides parent class as this is a rectangular aperture
+
+        Args:
+            point (Numpy array) : The 3D position of the point to check
+
+        Returns:
+            True / False (boolean) : Whether the point lies within the aperture or not
+        """
+        coordinates_along, coordinates_across = self.coordinates(point)
+
+        if np.abs(coordinates_along) < self.width()/2:
+            if np.abs(coordinates_across) < self.height()/2:
+                return True
+
+        return False
+
+    def distance_along(self, point, direction):
+        """
+        Calculates how far the point is from the detector in the given direction
+        This deals with the fact that it is not the shortest possible distance (detector could be tilted)
+
+        Args:
+            point (Numpy array) : The current point in space
+            direction (Numpy array) : The direction the ray is going in
+
+        Returns:
+            distance (float) : The distance along the direction between the point and detector
+        """
+        direction = np.array(direction, dtype=float) / np.linalg.norm(direction)
+        dot = np.dot(direction, self.orientation())
+
+        if np.abs(dot) < 1e-12:
+            return None # Travelling parallel to the plane
+
+        distance = np.dot(point - self.position(), self.orientation()) / dot
+        return distance
+
+    # Ray Bundle methods - applies the above methods to an entire bundle of rays
+    def ray_coordinates(self, bundle):
+        """
+        Converts the positions of all rays in the bundle to the detector's coordinates
+        This works AFTER a ray bundle has propagated and hit the bundle, as ray.pos() is the final position
+
+        Args:
+            bundle (RayBundle) : The bundle of rays incident upon the detector
+
+        Returns:
+            coordinates (Numpy array) : Array of coordinates for each ray
+        """
+        points = np.array([ray.pos() for ray in bundle.rays()])
+        coordinates = self.coordinates(points)
+        return coordinates
+
+    def line_width(self, bundle):
+        """
+        Gives how spread out the line is along the sensor
+
+        Args:
+            bundle (RayBundle) : The bundle of rays incident upon the detector
+
+        Returns:
+            std (float) : The standard deviation of the rays' positions along the detector
+        """
+        along, _ = self.ray_coordinates(bundle)
+        std = np.std(along)
+        return std
+
+    def spot_plot(self, bundle, ax=None, colour=None, label=None):
+        """
+        Returns a picture of what the detector "sees"
+        - uses self.ray_coordinates() to get the ray positions in the detector's coordinate system
+
+        Args:
+            bundle (RayBundle) : The ray bundle incident upon the detector
+            ax (Axis) : Optional existing axis argument - can write on previous graphs
+            colour (Color) : Optional colour argument for the points
+            label (String) : Optional label for a legend
+
+        Return:
+            ax (Axis) : The plot
+        """
+        if ax is None:
+            figure, ax = plt.subplots()
+
+        along, across = self.ray_coordinates(bundle)
+        ax.scatter(along, across, color=colour, label=label, s=5)
+        ax.set_xlabel("Position along detector (mm)")
+        ax.set_ylabel("Position across detector (mm)")
+
+        if label is not None:
+            ax.legend()
+
+        return ax
+
+
+class SphericalElement(PlaneElement):
+    """
+    A parent class for all spherical surfaces - reflectors and gratings
+    It is a child of a PlaneElement, as it is the same, but with a curvature
 
     Attributes:
         _position (Numpy Array) : The position of the surface's centre.
@@ -27,6 +326,7 @@ class SphericalElement(OpticalElement):
         _aperture (float) : The maximum extent of the surface from the element's axis.
         _curvature (float) : The curvature of the surface (1/Radius).
     """
+
     def __init__(self, position=[0.0, 0.0, 0.0], orientation=[0.0, 0.0, 1.0], aperture=6., curvature=-0.02):
         """
         Initiates the SphericalSurface objects
@@ -37,10 +337,9 @@ class SphericalElement(OpticalElement):
             aperture (float) : The maximum extend of the surface from the optical axis.
             curvature (float) : The curvature of the surface (1/radius).
         """
-        self._position = np.array(position)
-        self._orientation = np.array(orientation) / np.linalg.norm(orientation)
-        self._aperture = aperture
+        super().__init__(position, orientation, aperture)
         self._curvature = curvature
+        return
 
     def calc_normal(self, point, ray):
         """
@@ -53,11 +352,9 @@ class SphericalElement(OpticalElement):
         Returns:
             normal (Numpy array) : 3D normalised vector specifiying the normal to the surface.
         """
-
         # Flat Surface (plus or minus the orientation vector)
         if self._curvature == 0:
-            normal = -np.sign(np.dot(ray.direc(), self.orientation())) * self.orientation()
-            return np.array(normal)
+            return super().calc_normal(point, ray)
 
         # Curved Surface (C = P + (1/c) a)
         r_centre = self.position() + self.orientation()/self.curvature()
@@ -84,111 +381,44 @@ class SphericalElement(OpticalElement):
 
         # Flat Surface
         if self._curvature == 0:
-            dot = np.dot(ray_direc, self.orientation())
+            return super().intercept(ray)
 
-            # The ray runs parallel with the surface!
-            if np.abs(dot) < 1e-12:
-                return None
+        # Takes care about the fact that the centre of the sphere is not at the origin.
+        radius = 1 / self._curvature
+        r_centre = self.position() + self.orientation()/self.curvature()
+        r_ray = ray_pos - r_centre
 
-            l = np.dot(self.position() - ray_pos, self.orientation())
-            l /= np.dot(ray_direc, self.orientation())
+        dot = np.dot(r_ray, ray_direc)
+        discriminant = dot * dot - ( np.linalg.norm(r_ray)**2 - radius**2 )
 
-            # The crossing is behind the ray
+        # Deals with no interception.
+        if discriminant < 0:
+            return None
+
+        # Deals with there being 2 points of intersection.
+        l_min = -1 * dot - np.sqrt( discriminant )
+        l_add = -1 * dot + np.sqrt( discriminant )
+        l_vals = (l_min, l_add)
+
+        for l in l_vals:
             if not l > 1e-9:
-                return None
+                continue
 
             intercept = ray_pos + l * ray_direc
-            in_aperture = self.inside_aperture(intercept)
 
+            # Interception on far side of the sphere if dot < 0
+            dot = np.dot(intercept - r_centre, self.position() - r_centre)
+            if dot < 0:
+                continue
+
+            in_aperture = self.inside_aperture(intercept)
             if not in_aperture:
-                return None
+                continue
 
             return intercept
-        else:
-
-            # Takes care about the fact that the centre of the sphere is not at the origin.
-            radius = 1 / self._curvature
-            r_centre = self.position() + self.orientation()/self.curvature()
-            r_ray = ray_pos - r_centre
-
-            dot = np.dot(r_ray, ray_direc)
-            discriminant = dot * dot - ( np.linalg.norm(r_ray)**2 - radius**2 )
-
-            # Deals with no interception.
-            if discriminant < 0:
-                return None
-
-            # Deals with there being 2 points of intersection.
-            l_min = -1 * dot - np.sqrt( discriminant )
-            l_add = -1 * dot + np.sqrt( discriminant )
-            l_vals = (l_min, l_add)
-
-            for l in l_vals:
-                if not l > 1e-9:
-                    continue
-
-                intercept = ray_pos + l * ray_direc
-
-                # Interception on far side of the sphere if dot < 0
-                dot = np.dot(intercept - r_centre, self.position() - r_centre)
-                if dot < 0:
-                    continue
-
-                in_aperture = self.inside_aperture(intercept)
-                if not in_aperture:
-                    continue
-
-                return intercept
             
         return None
 
-    def inside_aperture(self, point):
-        # Checks that the interception is within the aperture radius
-        r = point - self.position()
-        distance_square = np.linalg.norm(r)**2 - np.dot(r, self.orientation())**2
-        if distance_square > self._aperture**2:
-            return False
-        return True
-    
-    def propagate_ray(self, ray):
-        """
-        Propagate function that propagates the ray through the element.
-        By default the direction will remain unchanged.
-
-        Args:
-            ray (Ray) : The ray being intercepted.
-        """
-        interception = self.intercept(ray)
-        
-        if interception is not None:
-            ray.append(interception, ray.direc())
-
-    def position(self):
-        """
-        Access method for the position variable.
-
-        Returns:
-            self._position (Numpy Array) : The position of the surface's centre.
-        """
-        return self._position
-
-    def orientation(self):
-            """
-            Access method for the orientation variable.
-    
-            Returns:
-                self._orientation (Numpy Array) : A unit vector for the direction the surface faces at its centre
-            """
-            return self._orientation
-    
-    def aperture(self):
-        """
-        Access method for the aperture of the surface.
-
-        Returns:
-            self._aperture (float) : The maximum extent of the surface from the optical axis.
-        """
-        return self._aperture
     
     def curvature(self):
         """
@@ -251,6 +481,7 @@ class SphericalVLSGrating(SphericalElement):
         interception = self.intercept(ray)
 
         if interception is None:
+            ray.set_terminated()
             return
 
         normal = self.calc_normal(interception, ray)
@@ -259,6 +490,7 @@ class SphericalVLSGrating(SphericalElement):
         diffracted_direc = ph.diffract(ray.direc(), normal, g, self.order(), ray.wavelength(), n_w)
 
         if diffracted_direc is None:
+            ray.set_terminated()
             return
 
         ray.append(interception, diffracted_direc)
@@ -313,91 +545,6 @@ class SphericalVLSGrating(SphericalElement):
     def order(self):
         return self._order
 
-class SphericalRefraction(SphericalElement):
-    """
-    A class for a spherical surface that refracts light
-
-    Attributes:
-        _position (Numpy Array) : The position of the surface's centre.
-        _orientation (Numpy array) : A unit vector for the direction the surface faces at its centre
-        _aperture (float) : The maximum extent of the surface from the optical (z) axis.
-        _curvature (float) : The curvature of the surface (1/Radius).
-        _n_1 (float) : The refractive index to the left of the surface.
-        _n_2 (float) : The refractive index to the right of the surface.
-    """
-    def __init__(self, position=[0.0, 0.0, 0.0], orientation=[0.0, 0.0, 1.0], aperture=0.0, curvature=0.0, n_1=0.0, n_2=0.0):
-        """
-        Initialise the object
-
-        Args:
-            position (Numpy Array) : The position of the surface's centre.
-            orientation (Numpy array) : A unit vector for the direction the surface faces at its centre
-            aperture (float) : Maximum extent of the surface from the optical axis.
-            curvature (float) : The radius of curvature of the surface.
-            n_1 (float) : The refractive index of the first material z<z0.
-            n_2 (float) : The refractive index of the second material z>z0.
-        """
-        super().__init__(position, orientation, aperture, curvature)
-        self._n_1 = n_1
-        self._n_2 = n_2
-
-    def n_1(self):
-        """
-        Access method for the n_1 variable.
-
-        Returns:
-            self.n_1 (float) : The refractive index of the first material z<z_0.
-        """
-        return self._n_1
-    
-    def n_2(self):
-        """
-        Access method for the n_2 variable.
-
-        Returns:
-            self._n_2 (float) : The refractive index of the second material z>z_0.
-        """  
-        return self._n_2
-    
-    def focal_point(self):
-        """
-        Method that will calculate the focal point of the element.
-
-        Returns:
-            f_point (Numpy array) : The focal point
-        """
-        radius = 1 / self._curvature
-        f_length = radius * 1 / (self._n_2 - self._n_1)
-        f_point = self.position() + (radius + f_length) * self.orientation()
-
-        return f_point
-    
-    def propagate_ray(self, ray):
-        """
-        Function that propagates a ray through the optical element.
-
-        Args:
-            ray (Ray) : The ray that is being propagated
-        """
-        interception = self.intercept(ray)
-
-        # Only propagates if the ray actually intercepts the surface
-        if interception is not None:
-            normal = self.calc_normal(interception, ray)
-
-            # Swap n_1 and n_2 if this dot product is less than zero
-            if np.dot(ray.direc(), self.orientation()) < 0:
-                n_1, n_2 = self._n_2, self._n_1
-
-            new_direction = ph.refract(ray.direc(), normal, n_1, n_2)
-
-            # Deals with TIR
-            if new_direction is not None:
-                ray.append(interception, new_direction)
-            else:
-                ray.append(interception, ph.reflect(ray.direc(), normal))
-
-
 class SphericalReflection(SphericalElement):
     """
     A class for a spherical surface that reflects light
@@ -445,75 +592,8 @@ class SphericalReflection(SphericalElement):
             normal = self.calc_normal(interception, ray)
             new_direction = ph.reflect(ray.direc(), normal)
             ray.append(interception, new_direction)
-    
+        else:
+            ray.set_terminated()
 
-class PlaneElement(OpticalElement):
-    """
-    The PlaneElement class
-    Note: For the project only one child is made (OutputPlane) but this allows for future extension
-          i.e. a PlaneRefractor or PlaneReflector could be implemented.
+        return
 
-    Attributes:
-        _z_0 (float) : The intercept between the element and the optical axis.
-        aperture (float) : The maximum extent of the element from the optical axis.
-    """
-    def __init__(self, z_0=100., aperture=100.):
-        """
-        Initiate the PlaneElement object.
-
-        Args:
-            z_0 (float) : The intercept between the element and the optical axis.
-            aperture (float) : The maximum extent of the element from the optical axis.
-        """
-        self._z_0 = z_0
-        self._aperture = aperture
-
-    def intercept(self, ray):
-        """
-        Function that calculates the interception between a ray and the planar element.
-
-        Args:
-            ray (Ray) : The ray being intercepted.
-
-        Returns:
-            intercept (Numpy array) : The 3D vector of the interception point.
-        """
-        ray_pos = ray.pos()
-        ray_direc = ray.direc()
-
-        l = ( self._z_0 - ray_pos[2] ) / ray_direc[2]
-        intercept = ray_pos + l * ray_direc
-
-        return intercept
-
-    def propagate_ray(self, ray):
-        """
-        Propagate function that propagates the ray through the element.
-        By default the direction will remain unchanged.
-
-        Args:
-            ray (Ray) : The ray being intercepted.
-        """
-        interception = self.intercept(ray)
-        
-        if interception is not None:
-            ray.append(interception, ray.direc())
-
-
-class OutputPlane(PlaneElement):
-    """
-    An output plane, which is where the ray 'stops' and its final position can be recorded
-
-    Attributes:
-        _z_0 (float) : Where the surface intercepts the optical (z) axis.
-        _aperture (float) : The maximum extent of the surface from the optical (z) axis.
-    """
-    
-    def __init__(self, z_0=250.):
-        """
-        Init method for the OutputPlane class
-
-        Args:
-            z_0 (float) : The z-intercept of the element
-        """
-        super().__init__(z_0=z_0, aperture=float("inf"))
