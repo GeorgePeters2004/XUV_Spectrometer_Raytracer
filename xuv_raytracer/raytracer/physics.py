@@ -66,3 +66,17 @@ def diffract(direc, normal, groove_direc, m, wavelength, grooves):
     direc_out /= np.linalg.norm(direc_out)
 
     return direc_out
+
+
+def photon_energy(wavelength):
+    """
+    Calculates the photon energy with a given wavelength
+
+    Args:
+        wavelength (float) : The wavelength of the photon (nm)
+    
+    Returns:
+        energy (float) : The energy of the photon (eV)
+    """
+    energy = 1239.84 / wavelength # hc = 1239.84 eV nm
+    return energy

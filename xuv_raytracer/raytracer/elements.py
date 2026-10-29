@@ -148,7 +148,6 @@ class PlaneElement(OpticalElement):
             normal (Numpy array) : The normal to the surface at the given point
         """
         normal = -np.sign(np.dot(ray.direc(), self.orientation())) * self.orientation()
-        normal = np.array(normal) / np.linalg.norm(normal)
         return normal
     
 
@@ -256,6 +255,21 @@ class Detector(PlaneElement):
 
         distance = np.dot(point - self.position(), self.orientation()) / dot
         return distance
+
+    def incidence_angle(self, direction):
+        """
+        Angle between a direction and the detector normal
+
+        Args:
+            direction (Numpy array) : Given direction (3D vector)
+
+        Returns:
+            angle (float) : The angle between the direction and the normal (radians between 0 and pi/2)
+        """
+        direction = np.array(direction, dtype=float) / np.linalg.norm(direction)
+        cos_angle = np.abs(np.dot(direction, self.orientation()))
+        angle = np.arccos(np.clip(cos_angle, 0, 1)) # Clip avoids rounding errors, e.g. 1.000000000000004
+        return angle
 
     # Ray Bundle methods - applies the above methods to an entire bundle of rays
     def ray_coordinates(self, bundle):
@@ -449,7 +463,8 @@ class SphericalVLSGrating(SphericalElement):
         _length (float) : Length of the rectangular grating in mm (Dispersion direction)
         _order (int) : The diffraction order
     """
-    def __init__(self, position=(0.0, 0.0, 0.0), orientation=(0.0, 0.0, 1.0), curvature=0.0, central_groove_density=120, VLS_coefficients=[7.3e-3, 4.1e-5], groove_axis=[0, 1, 0], width=30, length=50, order=0):
+    def __init__(self, position=(0.0, 0.0, 0.0), orientation=(0.0, 0.0, 1.0), curvature=0.0, central_groove_density=120, 
+                 VLS_coefficients=[7.3e-3, 4.1e-5], groove_axis=[0, 1, 0], width=30, length=50, order=0):
         """
         Initialise the object
         
@@ -499,7 +514,7 @@ class SphericalVLSGrating(SphericalElement):
     def inside_aperture(self, point):
 
         r = point - self.position()
-        w = np.dot(r, self.groove_axis()) # Distance across the grooves
+        w = self.w(point)
         groove_direction = np.cross(self.orientation(), self.groove_axis())
         groove_direction /= np.linalg.norm(groove_direction)
         u = np.dot(r, groove_direction) # Distance along the grooves
@@ -511,8 +526,7 @@ class SphericalVLSGrating(SphericalElement):
 
     # VLS Helpers
     def local_groove_density(self, point):
-        r = point - self.position()
-        w = np.dot(r, self.groove_axis())
+        w = self.w(point)
         n_0 = self.central_groove_density()
         n_w = n_0 * (1 + self.b1() * w + self.b2() * w**2)
         return n_w
@@ -522,6 +536,55 @@ class SphericalVLSGrating(SphericalElement):
         n = normal
         g = (a - np.dot(a, n) * n) / np.linalg.norm(a - np.dot(a, n) * n)
         return g
+
+    def illuminated_grooves(self, points):
+        """
+        A function to count how many grooves the light actually lands on
+        - sets a hard limit to the resolution
+        - R = lambda / delta lambda <= m * N
+
+        Args:
+            points (Numpy array) : N x 3 array of where the rays hit the grating
+
+        Returns:
+            n_grooves (float) : The number of grooves between the edges of the footprint
+        """
+        w = self.w(points)
+
+        # Antiderivative of 1 + b1 w + b2 w^2
+        def integral(x):
+            return x + self.b1() * x**2 / 2 + self.b2() * x**3 / 3
+
+        # groove density x definite integral = groove count
+        n_grooves = self.central_groove_density() * (integral(w.max()) - integral(w.min()))
+        return n_grooves
+
+    def resolving_power(self, points):
+        """
+        The diffraction-limited resolving power for light covering these points: |m| x N.
+
+        Args:
+            points (Numpy array) : N x 3 array of points hitting the grating
+
+        Returns:
+            res_pow (float) : The resolving power, |m| x N
+        """
+        res_pow = abs(self.order()) * self.illuminated_grooves(points)
+        return res_pow
+
+
+    def w(self, point):
+        """
+        Finds how far a point on the grating is from its centre, across the grooves
+
+        Args:
+            points (Numpy array) : A 3D point on the grating, or an N x 3 array of points
+
+        Returns:
+            w (float or Numpy array) : The distance across the grooves in mm
+        """
+        w = np.dot(np.array(point) - self.position(), self.groove_axis())
+        return w
     
     # Access Functions
     def central_groove_density(self):
